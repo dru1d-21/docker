@@ -1,0 +1,77 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Build image and run tests on GitHub-hosted runner ──────────────
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kubsu
+          POSTGRES_PASSWORD: kubsu
+          POSTGRES_DB: kubsu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t kubsu-app:latest .
+
+      - name: Run tests inside built image
+        run: |
+          docker run --rm \
+            --network host \
+            -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu \
+            kubsu-app:latest \
+            pytest tests -v
+
+      - name: Export image to archive
+        run: docker save kubsu-app:latest | gzip > kubsu-app.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: kubsu-app.tar.gz
+          retention-days: 1
+
+  # ── Job 2: Deploy via self-hosted runner on your laptop ───────────────────
+  deploy:
+    needs: build-and-test
+    runs-on: self-hosted
+
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Copy image to university server
+        run: |
+          scp -P 58529 -o StrictHostKeyChecking=no \
+            kubsu-app.tar.gz feynman@kubsu.tyvik.ru:~/
+
+      - name: Load and restart container on server
+        run: |
+          ssh -p 58529 -o StrictHostKeyChecking=no feynman@kubsu.tyvik.ru \
+            'podman load < ~/kubsu-app.tar.gz && \
+             podman stop kubsu-app 2>/dev/null || true && \
+             podman rm   kubsu-app 2>/dev/null || true && \
+             podman run -d \
+               --name kubsu-app \
+               --network host \
+               -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu \
+               kubsu-app:latest'
