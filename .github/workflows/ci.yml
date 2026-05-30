@@ -27,18 +27,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t kubsu-app:latest .
+      - name: Build production image
+        run: docker build --target production -t kubsu-app:latest .
 
-      - name: Run tests inside built image
+      - name: Build test image
+        run: docker build --target test -t kubsu-app:test .
+
+      - name: Run tests inside test image
         run: |
           docker run --rm \
             --network host \
             -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu \
-            kubsu-app:latest \
+            kubsu-app:test \
             pytest tests -v
 
-      - name: Export image to archive
+      - name: Export production image
         run: docker save kubsu-app:latest | gzip > kubsu-app.tar.gz
 
       - name: Upload image artifact
@@ -59,11 +62,8 @@ jobs:
         with:
           name: docker-image
 
-      - name: Copy image to university server
-        run: scp -P 58529 -o StrictHostKeyChecking=no -o BatchMode=yes kubsu-app.tar.gz feynman@kubsu.tyvik.ru:~/
-
-      - name: Load image on server
-        run: ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load < ~/kubsu-app.tar.gz'
+      - name: Stream image directly to server
+        run: ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load' < kubsu-app.tar.gz
 
       - name: Restart container on server
         run: |
