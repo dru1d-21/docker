@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir --prefix=/install ".[test]"
 FROM python:3.12-slim
 
 WORKDIR /app
+ENV PYTHONPATH=/app
+
 COPY --from=builder /install /usr/local
 COPY src/ ./src/
 COPY tests/ ./tests/
