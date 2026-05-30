@@ -60,18 +60,12 @@ jobs:
           name: docker-image
 
       - name: Copy image to university server
-        run: |
-          scp -P 58529 -o StrictHostKeyChecking=no \
-            kubsu-app.tar.gz feynman@kubsu.tyvik.ru:~/
+        run: scp -P 58529 -o StrictHostKeyChecking=no -o BatchMode=yes kubsu-app.tar.gz feynman@kubsu.tyvik.ru:~/
 
-      - name: Load and restart container on server
+      - name: Load image on server
+        run: ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load < ~/kubsu-app.tar.gz'
+
+      - name: Restart container on server
         run: |
-          ssh -p 58529 -o StrictHostKeyChecking=no feynman@kubsu.tyvik.ru \
-            'podman load < ~/kubsu-app.tar.gz && \
-             podman stop kubsu-app 2>/dev/null || true && \
-             podman rm   kubsu-app 2>/dev/null || true && \
-             podman run -d \
-               --name kubsu-app \
-               --network host \
-               -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu \
-               kubsu-app:latest'
+          ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru \
+            'podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null; podman run -d --name kubsu-app --network host -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu kubsu-app:latest'
