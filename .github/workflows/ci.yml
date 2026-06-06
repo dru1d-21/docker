@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  # ── Job 1: Build, test, push to GHCR ──────────────────────────────────────
+  # ── Job 1: сборка, тесты, push production образа в GHCR ───────────────────
   build-and-test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
 
     services:
       postgres:
@@ -23,12 +24,21 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image name (lowercase for GHCR)
+        id: meta
+        run: |
+          REPO=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${REPO}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -36,9 +46,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build production image
-        run: docker build --target production -t ghcr.io/${{ github.repository }}:latest .
 
       - name: Build test image
         run: docker build --target test -t kubsu-app:test .
@@ -51,18 +58,21 @@ jobs:
             kubsu-app:test \
             pytest tests -v
 
-      - name: Push production image to GHCR
-        run: docker push ghcr.io/${{ github.repository }}:latest
+      - name: Build and push production image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
 
-  # ── Job 2: Pull from GHCR on server and restart ───────────────────────────
+  # ── Job 2: деплой на сервер через SSH ─────────────────────────────────────
   deploy:
-    needs: build-and-test
     runs-on: ubuntu-latest
-    permissions:
-      packages: read
+    needs: build-and-test
 
     steps:
-      - name: Setup SSH key
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -70,12 +80,20 @@ jobs:
           printf 'Host kubsu.tyvik.ru\n  Port 58529\n  User feynman\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking no\n' > ~/.ssh/config
 
       - name: Deploy on server
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+          IMAGE: ${{ needs.build-and-test.outputs.image }}
         run: |
-          ssh kubsu.tyvik.ru "
-            podman login ghcr.io -u ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} &&
-            podman pull ghcr.io/${{ github.repository }}:latest &&
-            podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null;
-            podman run -d --name kubsu-app --network host \
-              -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu \
-              ghcr.io/${{ github.repository }}:latest
-          "
+          ssh kubsu.tyvik.ru bash << EOF
+          set -e
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GH_ACTOR" --password-stdin
+          podman pull "$IMAGE"
+          podman stop kubsu-app 2>/dev/null || true
+          podman rm   kubsu-app 2>/dev/null || true
+          podman run -d \
+            --name kubsu-app \
+            --network host \
+            -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu \
+            "$IMAGE"
+          EOF
