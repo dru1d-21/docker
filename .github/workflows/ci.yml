@@ -5,9 +5,12 @@ on:
     branches: [main]
 
 jobs:
-  # ── Job 1: Build image and run tests on GitHub-hosted runner ──────────────
+  # ── Job 1: Build, test, push to GHCR ──────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     services:
       postgres:
@@ -27,8 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build production image
-        run: docker build --target production -t kubsu-app:latest .
+        run: docker build --target production -t ghcr.io/${{ github.repository }}:latest .
 
       - name: Build test image
         run: docker build --target test -t kubsu-app:test .
@@ -41,31 +51,27 @@ jobs:
             kubsu-app:test \
             pytest tests -v
 
-      - name: Export production image
-        run: docker save kubsu-app:latest | gzip > kubsu-app.tar.gz
+      - name: Push production image to GHCR
+        run: docker push ghcr.io/${{ github.repository }}:latest
 
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: kubsu-app.tar.gz
-          retention-days: 1
-
-  # ── Job 2: Deploy via self-hosted runner on your laptop ───────────────────
+  # ── Job 2: Pull from GHCR, stream to server ───────────────────────────────
   deploy:
     needs: build-and-test
     runs-on: self-hosted
+    permissions:
+      packages: read
 
     steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Stream image directly to server
-        run: ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load' < kubsu-app.tar.gz
+      - name: Pull image from GHCR
+        run: docker pull ghcr.io/${{ github.repository }}:latest
+
+      - name: Stream image to server
+        run: docker save ghcr.io/${{ github.repository }}:latest | gzip | ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load'
 
       - name: Restart container on server
         run: |
           ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru \
-            'podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null; podman run -d --name kubsu-app --network host -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu kubsu-app:latest'
+            'podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null; podman run -d --name kubsu-app --network host -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu ghcr.io/${{ github.repository }}:latest'
