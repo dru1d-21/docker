@@ -54,24 +54,28 @@ jobs:
       - name: Push production image to GHCR
         run: docker push ghcr.io/${{ github.repository }}:latest
 
-  # ── Job 2: Pull from GHCR, stream to server ───────────────────────────────
+  # ── Job 2: Pull from GHCR on server and restart ───────────────────────────
   deploy:
     needs: build-and-test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       packages: read
 
     steps:
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Pull image from GHCR
-        run: docker pull ghcr.io/${{ github.repository }}:latest
-
-      - name: Stream image to server
-        run: docker save ghcr.io/${{ github.repository }}:latest | gzip | ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru 'podman load'
-
-      - name: Restart container on server
+      - name: Setup SSH key
         run: |
-          ssh -p 58529 -T -o StrictHostKeyChecking=no -o BatchMode=yes feynman@kubsu.tyvik.ru \
-            'podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null; podman run -d --name kubsu-app --network host -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu ghcr.io/${{ github.repository }}:latest'
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 58529 kubsu.tyvik.ru >> ~/.ssh/known_hosts
+
+      - name: Deploy on server
+        run: |
+          ssh -p 58529 feynman@kubsu.tyvik.ru "
+            podman login ghcr.io -u ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} &&
+            podman pull ghcr.io/${{ github.repository }}:latest &&
+            podman stop kubsu-app 2>/dev/null; podman rm kubsu-app 2>/dev/null;
+            podman run -d --name kubsu-app --network host \
+              -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu \
+              ghcr.io/${{ github.repository }}:latest
+          "
