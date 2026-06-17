@@ -1,23 +1,36 @@
-# Stage 1: Builder — install only production dependencies
+# builder: устанавливаем зависимости приложения в venv
 FROM python:3.12-slim AS builder
 
-WORKDIR /build
+WORKDIR /app
 COPY pyproject.toml .
-RUN mkdir -p src && touch src/__init__.py
-RUN pip install --no-cache-dir --prefix=/install .
+COPY src/ ./src/
 
-# Stage 2: Production runtime (deployed to server)
-FROM python:3.12-slim AS production
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir .
+
+# runtime: финальный образ для podman/production (без тестов и pytest)
+FROM python:3.12-slim AS runtime
 
 WORKDIR /app
-ENV PYTHONPATH=/app
-COPY --from=builder /install /usr/local
-COPY src/ ./src/
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY --from=builder /app/src ./src
+
 EXPOSE 8058
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8058"]
 
-# Stage 3: Test image — extends production, adds test tools
-FROM production AS test
+# test: слой только для CI (pytest + код тестов)
+FROM runtime AS test
 
-RUN pip install --no-cache-dir pytest pytest-asyncio==0.25.3 httpx==0.28.1
+USER root
+COPY pyproject.toml .
 COPY tests/ ./tests/
+RUN pip install --no-cache-dir ".[test]" \
+    && chown -R appuser:appuser /app/tests
+USER appuser
+
+CMD ["python", "-m", "pytest", "tests", "-v"]
