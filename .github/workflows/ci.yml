@@ -9,7 +9,7 @@ permissions:
   packages: write
 
 jobs:
-  # ── Job 1: сборка, тесты, push production образа в GHCR ───────────────────
+  # ── Job 1: сборка, тесты, push в GHCR (GitHub runner) ────────────────────
   build-and-test:
     runs-on: ubuntu-latest
 
@@ -66,26 +66,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.image }}
 
-  # ── Job 2: деплой на сервер через SSH ─────────────────────────────────────
+  # ── Job 2: деплой через self-hosted runner на ноутбуке ────────────────────
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: build-and-test
+    permissions:
+      packages: read
 
     steps:
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf 'Host kubsu.tyvik.ru\n  Port 58529\n  User feynman\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking no\n' > ~/.ssh/config
-
-      - name: Deploy on server
+      - name: Deploy on server via SSH
         env:
+          IMAGE: ${{ needs.build-and-test.outputs.image }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
-          IMAGE: ${{ needs.build-and-test.outputs.image }}
         run: |
-          ssh kubsu.tyvik.ru bash << EOF
+          ssh -p 58529 -o StrictHostKeyChecking=no feynman@kubsu.tyvik.ru bash -s << EOF
           set -e
           echo "$GH_TOKEN" | podman login ghcr.io -u "$GH_ACTOR" --password-stdin
           podman pull "$IMAGE"
@@ -97,4 +92,3 @@ jobs:
             -e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@db:5432/kubsu \
             "$IMAGE"
           EOF
-          
